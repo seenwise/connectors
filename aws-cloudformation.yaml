@@ -1,0 +1,120 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: >
+  Seenwise — CloudFront AI-traffic connector. Creates an S3 log bucket + a Lambda that parses
+  CloudFront standard logs, keeps only AI bot crawls / AI referral visits, and forwards them to
+  Seenwise. After the stack is created, point your CloudFront distribution's STANDARD logging at the
+  bucket shown in Outputs. One-click via the CloudFormation "Launch Stack" URL (params pre-filled).
+  NOTE: the inline Lambda below is a self-contained convenience with a COARSE bot filter (it can't
+  import a sibling file). aws-cloudfront-lambda.mjs is the canonical, single-sourced version (it
+  imports lib/bots.js) — deploy it as a zip (with lib/) if you want the exact bot list.
+
+Parameters:
+  BrandId:
+    Type: String
+    Description: Your Seenwise brand id.
+  IngestKey:
+    Type: String
+    NoEcho: true
+    Description: Your Seenwise ingest key (ik_…). Write-only secret.
+  IngestUrl:
+    Type: String
+    Default: https://api.tryseenwise.com/ingest
+
+Resources:
+  Role:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: { Service: lambda.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: read-cloudfront-logs
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: Allow
+                Action: s3:GetObject
+                Resource: !Sub "arn:aws:s3:::seenwise-cf-logs-${AWS::AccountId}-${AWS::Region}/*"
+
+  ProcessorFn:
+    Type: AWS::Lambda::Function
+    Properties:
+      Runtime: nodejs20.x
+      Handler: index.handler
+      Timeout: 60
+      MemorySize: 256
+      Role: !GetAtt Role.Arn
+      Environment:
+        Variables:
+          SEENWISE_BRAND: !Ref BrandId
+          SEENWISE_INGEST_KEY: !Ref IngestKey
+          SEENWISE_INGEST_URL: !Ref IngestUrl
+      Code:
+        ZipFile: |
+          const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+          const { gunzipSync } = require('zlib');
+          const s3 = new S3Client({});
+          const INGEST = process.env.SEENWISE_INGEST_URL, BRAND = process.env.SEENWISE_BRAND, KEY = process.env.SEENWISE_INGEST_KEY;
+          const BOT = /GPTBot|OAI-SearchBot|ChatGPT-User|PerplexityBot|Perplexity-User|ClaudeBot|Claude-User|Claude-SearchBot|anthropic-ai|Google-Extended|Bytespider|Amazonbot/i;
+          const REF = /(^|\.)(chatgpt\.com|chat\.openai\.com|perplexity\.ai|gemini\.google\.com|claude\.ai|copilot\.microsoft\.com|you\.com|poe\.com|phind\.com)$/i;
+          const dec = (v) => { if (!v || v === '-') return ''; try { return decodeURIComponent(v.replace(/\+/g, ' ')); } catch { return v; } };
+          const toBuf = async (b) => { const c = []; for await (const x of b) c.push(x); return Buffer.concat(c); };
+          exports.handler = async (event) => {
+            for (const r of event.Records || []) {
+              const Bucket = r.s3.bucket.name, Key = decodeURIComponent(r.s3.object.key.replace(/\+/g, ' '));
+              const o = await s3.send(new GetObjectCommand({ Bucket, Key }));
+              const buf = await toBuf(o.Body);
+              const text = (Key.endsWith('.gz') ? gunzipSync(buf) : buf).toString('utf8');
+              let cols = []; const out = [];
+              for (const line of text.split('\n')) {
+                if (!line) continue;
+                if (line.startsWith('#Fields:')) { cols = line.slice(8).trim().split(/\s+/); continue; }
+                if (line.startsWith('#')) continue;
+                const f = line.split('\t'), g = (n) => { const i = cols.indexOf(n); return i >= 0 ? f[i] : ''; };
+                const ua = dec(g('cs(User-Agent)')), ref = dec(g('cs(Referer)'));
+                let host = ''; try { host = new URL(ref).hostname; } catch {}
+                if (!(BOT.test(ua) || (host && REF.test(host)))) continue;
+                const q = g('cs-uri-query');
+                out.push({ ts: g('date') + 'T' + g('time') + 'Z', path: dec(g('cs-uri-stem')) + (q && q !== '-' ? '?' + q : ''), userAgent: ua, referer: ref, status: Number(g('sc-status')) || undefined, ip: g('c-ip') || undefined });
+              }
+              for (let i = 0; i < out.length; i += 500) {
+                await fetch(INGEST, { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + KEY }, body: JSON.stringify({ brandId: BRAND, source: 'aws_cf_s3', logs: out.slice(i, i + 500) }) }).catch(() => {});
+              }
+            }
+            return { ok: true };
+          };
+
+  # Permission must exist before the bucket sets its notification (the bucket DependsOn it). The bucket
+  # has an explicit name so this SourceArn doesn't need !GetAtt on the bucket — that's what breaks the
+  # otherwise-circular dependency (bucket → fn, permission → bucket).
+  InvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref ProcessorFn
+      Principal: s3.amazonaws.com
+      SourceArn: !Sub "arn:aws:s3:::seenwise-cf-logs-${AWS::AccountId}-${AWS::Region}"
+
+  LogBucket:
+    Type: AWS::S3::Bucket
+    DependsOn: InvokePermission
+    Properties:
+      BucketName: !Sub "seenwise-cf-logs-${AWS::AccountId}-${AWS::Region}"
+      OwnershipControls:
+        Rules: [{ ObjectOwnership: BucketOwnerPreferred }] # CloudFront standard logging needs ACLs
+      LifecycleConfiguration:
+        Rules: [{ Id: expire, Status: Enabled, ExpirationInDays: 7 }]
+      NotificationConfiguration:
+        LambdaConfigurations:
+          - Event: s3:ObjectCreated:*
+            Function: !GetAtt ProcessorFn.Arn
+
+Outputs:
+  LogBucketDomain:
+    Description: Set your CloudFront distribution's Standard logging to this bucket (S3 bucket domain).
+    Value: !Sub "seenwise-cf-logs-${AWS::AccountId}-${AWS::Region}.s3.amazonaws.com"

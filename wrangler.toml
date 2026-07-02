@@ -1,0 +1,8 @@
+name = "seenwise-attribution"
+main = "cloudflare-worker.js"
+compatibility_date = "2024-11-01"
+
+# Deploy: `wrangler deploy`, then add a route (Workers → Triggers → yourdomain.com/*).
+# Set two secrets — NEVER commit them (this repo is public):
+#   wrangler secret put SEENWISE_BRAND   # your Seenwise brand id
+#   wrangler secret put SEENWISE_KEY     # your Seenwise ingest key (write-only)
