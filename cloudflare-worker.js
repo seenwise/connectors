@@ -38,7 +38,7 @@ export default {
             logs: [
               {
                 ts: new Date().toISOString(),
-                path: new URL(req.url).pathname,
+                path: (u => u.pathname + u.search)(new URL(req.url)), // query kept: utm_source=chatgpt.com recovers stripped referers
                 userAgent: ua,
                 referer: ref,
                 status: res.status,

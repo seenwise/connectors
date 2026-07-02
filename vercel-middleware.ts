@@ -43,7 +43,7 @@ export function middleware(req: NextRequest, event: NextFetchEvent) {
           logs: [
             {
               ts: new Date().toISOString(),
-              path: req.nextUrl.pathname,
+              path: req.nextUrl.pathname + req.nextUrl.search, // query kept: utm_source recovers stripped referers
               userAgent: ua.slice(0, 1024),
               referer: ref.slice(0, 2048),
               ip,
