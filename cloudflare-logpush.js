@@ -43,12 +43,19 @@ export default {
         /* not a url */
       }
       if (!isAiHit(ua, host)) continue;
+      // Truncate + coerce so one oversized header or a string status can never invalidate the batch.
       logs.push({
-        ts: o.EdgeStartTimestamp || new Date().toISOString(),
-        path: o.ClientRequestURI || o.ClientRequestPath || "/",
-        userAgent: ua,
-        referer: ref,
-        status: o.EdgeResponseStatus,
+        ts: String(o.EdgeStartTimestamp || new Date().toISOString()).slice(
+          0,
+          40,
+        ),
+        path: String(o.ClientRequestURI || o.ClientRequestPath || "/").slice(
+          0,
+          2048,
+        ),
+        userAgent: ua.slice(0, 1024),
+        referer: ref.slice(0, 2048),
+        status: Number(o.EdgeResponseStatus) || undefined,
         ip: o.ClientIP,
       });
     }

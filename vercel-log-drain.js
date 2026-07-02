@@ -61,14 +61,15 @@ export default async function handler(req, res) {
       /* not a url */
     }
     if (!isAiHit(ua, host)) continue;
+    // Truncate + coerce so one oversized header or a string status can never invalidate the batch.
     logs.push({
       ts: e.timestamp
         ? new Date(e.timestamp).toISOString()
         : new Date().toISOString(),
-      path: p.path || "/",
-      userAgent: ua,
-      referer: ref,
-      status: p.statusCode,
+      path: String(p.path || "/").slice(0, 2048),
+      userAgent: ua.slice(0, 1024),
+      referer: ref.slice(0, 2048),
+      status: Number(p.statusCode) || undefined,
       ip: p.clientIp,
     });
   }

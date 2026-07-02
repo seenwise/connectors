@@ -92,11 +92,15 @@ export const handler = async (event) => {
       const ref = dec(get("cs(Referer)"));
       if (!isAi(ua, ref)) continue;
       const q = get("cs-uri-query");
+      // Truncated so one oversized header can never invalidate the batch.
       out.push({
         ts: `${get("date")}T${get("time")}Z`,
-        path: dec(get("cs-uri-stem")) + (q && q !== "-" ? `?${q}` : ""),
-        userAgent: ua,
-        referer: ref,
+        path: (dec(get("cs-uri-stem")) + (q && q !== "-" ? `?${q}` : "")).slice(
+          0,
+          2048,
+        ),
+        userAgent: ua.slice(0, 1024),
+        referer: ref.slice(0, 2048),
         status: Number(get("sc-status")) || undefined,
         ip: get("c-ip") || undefined,
       });

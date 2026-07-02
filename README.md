@@ -41,5 +41,5 @@ or just paste the self-contained snippet from the Seenwise dashboard, which has 
 ## Test
 
 ```bash
-node --test test/      # zero-dep smoke test (the monorepo owns the full drift/parity guard)
+node --test test/*.mjs   # zero-dep smoke test (the monorepo owns the full drift/parity guard)
 ```
